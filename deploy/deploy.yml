@@ -1,0 +1,52 @@
+trigger:
+  branches:
+    include:
+    - main # Adjust this as necessary
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  - name: azureSubscription
+    value: 'Your-Azure-Service-Connection-Name' # Define your Azure service connection
+  - name: resourceGroupName
+    value: 'Your-Resource-Group' # Specify your resource group
+  - name: location
+    value: 'Your-Region' # Specify the deployment region (e.g., eastus)
+  - name: cosmosDbAccountName
+    value: 'yourCosmosDbAccountName' # Ensure this is unique across Azure
+  - name: databaseName
+    value: 'YourDatabaseName'
+  - name: containerName
+    value: 'YourContainerName'
+  - name: partitionKey
+    value: '/YourPartitionKey'
+
+steps:
+- task: AzureCLI@2
+  inputs:
+    azureSubscription: $(azureSubscription)
+    scriptType: 'bash'
+    scriptLocation: 'inlineScript'
+    inlineScript: |
+      # Create the Cosmos DB account
+      az cosmosdb create \
+        --name $(cosmosDbAccountName) \
+        --resource-group $(resourceGroupName) \
+        --kind GlobalDocumentDB \
+        --locations regionName=$(location) failoverPriority=0 \
+        --default-consistency-level Session
+
+      # Create a SQL API database
+      az cosmosdb sql database create \
+        --account-name $(cosmosDbAccountName) \
+        --resource-group $(resourceGroupName) \
+        --name $(databaseName)
+
+      # Create a SQL API container within the database
+      az cosmosdb sql container create \
+        --account-name $(cosmosDbAccountName) \
+        --resource-group $(resourceGroupName) \
+        --database-name $(databaseName) \
+        --name $(containerName) \
+        --partition-key-path $(partitionKey)
