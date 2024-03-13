@@ -1,0 +1,57 @@
+param location string = resourceGroup().location
+param cosmosDbAccountName string = 'yourCosmosDbAccountName'
+param databaseName string = 'YourDatabaseName'
+param containerName string = 'YourContainerName'
+
+resource cosmosDbAccount 'Microsoft.DocumentDB/databaseAccounts@2021-06-15' = {
+  name: cosmosDbAccountName
+  location: location
+  kind: 'GlobalDocumentDB'
+  properties: {
+    databaseAccountOfferType: 'Standard'
+    consistencyPolicy: {
+      defaultConsistencyLevel: 'Session'
+    }
+    locations: [
+      {
+        locationName: location
+        failoverPriority: 0
+        isZoneRedundant: false
+      }
+    ]
+    capabilities: [
+      {
+        name: 'EnableServerless'
+      }
+    ]
+  }
+}
+
+resource sqlDatabase 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases@2021-06-15' = {
+  name: '${cosmosDbAccountName}/${databaseName}'
+  properties: {
+    resource: {
+      id: databaseName
+    }
+    options: {
+      throughput: 400
+    }
+  }
+}
+
+resource sqlContainer 'Microsoft.DocumentDB/databaseAccounts/sqlDatabases/containers@2021-06-15' = {
+  name: '${cosmosDbAccountName}/${databaseName}/${containerName}'
+  properties: {
+    resource: {
+      id: containerName
+      partitionKey: {
+        paths: [
+          '/partitionKey'
+        ]
+        kind: 'Hash'
+      }
+      throughput: 400
+    }
+    options: {}
+  }
+}
