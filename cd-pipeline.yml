@@ -1,0 +1,46 @@
+trigger:
+  branches:
+    include:
+    - main
+    - staging
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  - group: 'azure-credentials' # Variable group with Azure service connection
+  - name: 'environment'
+    ${{ if eq(variables['Build.SourceBranch'], 'refs/heads/main') }}:
+      value: 'production'
+    ${{ if eq(variables['Build.SourceBranch'], 'refs/heads/staging') }}:
+      value: 'staging'
+
+steps:
+- checkout: self
+
+- task: AzureCLI@2
+  displayName: 'Deploy Azure Resources including Cosmos DB'
+  inputs:
+    azureSubscription: '$(azure-credentials)'
+    scriptType: 'bash'
+    scriptLocation: 'inlineScript'
+    inlineScript: |
+      # Deploy the main infrastructure with Bicep
+      az deployment group create \
+      --resource-group <Your-Resource-Group-Name> \
+      --template-file $(Build.SourcesDirectory)/bicep/main.bicep \
+      --parameters environment=$(environment) imageTag=$(Build.BuildId)
+      
+      # Deploy Cosmos DB
+      az deployment group create \
+      --resource-group <Your-Resource-Group-Name> \
+      --template-file $(Build.SourcesDirectory)/bicep/cosmosdb.bicep \
+      --parameters cosmosDbAccountName='uniqueCosmosDbName${{ variables.environment }}' databaseName='YourDatabaseName' containerName='YourContainerName'
+
+- task: AzureWebAppContainer@1
+  displayName: 'Update Azure Container App'
+  inputs:
+    azureSubscription: '<Your-Service-Connection-Name>'
+    appName: '<Your-Azure-Container-App-Name>'
+    containers: '<Your-Container-Registry-URL>/your-image-repo:$(Build.BuildId)'
+    resourceGroupName: '<Your-Resource-Group-Name>'
