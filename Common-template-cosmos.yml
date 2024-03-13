@@ -1,0 +1,45 @@
+parameters:
+- name: cosmosDbAccountName
+  type: string
+- name: databaseName
+  type: string
+- name: containerName
+  type: string
+- name: partitionKey
+  type: string
+- name: resourceGroupName
+  type: string
+- name: location
+  type: string
+
+steps:
+- task: AzureCLI@2
+  displayName: 'Deploy Azure Cosmos DB'
+  inputs:
+    azureSubscription: $(azureSubscription) # This assumes you have a variable azureSubscription set in your pipeline or variable group
+    scriptType: 'bash'
+    scriptLocation: 'inlineScript'
+    inlineScript: |
+      # Create Cosmos DB account
+      az cosmosdb create \
+        --name ${{ parameters.cosmosDbAccountName }} \
+        --resource-group ${{ parameters.resourceGroupName }} \
+        --locations regionName=${{ parameters.location }} failoverPriority=0 isZoneRedundant=False \
+        --kind GlobalDocumentDB \
+        --default-consistency-level Session \
+        --enable-multiple-write-locations true \
+        --enable-automatic-failover true
+
+      # Create a SQL API database
+      az cosmosdb sql database create \
+        --account-name ${{ parameters.cosmosDbAccountName }} \
+        --resource-group ${{ parameters.resourceGroupName }} \
+        --name ${{ parameters.databaseName }}
+
+      # Create a SQL API container
+      az cosmosdb sql container create \
+        --account-name ${{ parameters.cosmosDbAccountName }} \
+        --resource-group ${{ parameters.resourceGroupName }} \
+        --database-name ${{ parameters.databaseName }} \
+        --name ${{ parameters.containerName }} \
+        --partition-key-path ${{ parameters.partitionKey }}
