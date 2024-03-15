@@ -1,0 +1,46 @@
+trigger:
+- main
+
+variables:
+- name: azureSubscription
+  value: 'Your-Azure-Service-Connection-Name'
+- name: resourceGroupName
+  value: 'Your-Resource-Group'
+- name: cosmosDbAccountName
+  value: 'yourCosmosDbAccountName'
+
+stages:
+- stage: DeployCosmosDB
+  jobs:
+  - job: CreateCosmosDB
+    steps:
+      - template: create-cosmosdb.yml
+        parameters:
+          cosmosDbAccountName: $(cosmosDbAccountName)
+          databaseName: 'YourDatabaseName'
+          containerName: 'YourContainerName'
+          partitionKey: '/YourPartitionKey'
+          resourceGroupName: $(resourceGroupName)
+          location: 'YourRegion'
+      
+      - task: AzureCLI@2
+        name: fetchConnectionString
+        displayName: 'Fetch Cosmos DB Connection String'
+        inputs:
+          azureSubscription: $(azureSubscription)
+          scriptType: 'bash'
+          scriptLocation: 'inlineScript'
+          inlineScript: |
+            connectionString=$(az cosmosdb keys list --type connection-strings --name $(cosmosDbAccountName) --resource-group $(resourceGroupName) --query connectionStrings[0].connectionString --output tsv)
+            echo "##vso[task.setvariable variable=cosmosDbConnectionString;issecret=true]${connectionString}"
+
+- stage: DeployAPI
+  dependsOn: DeployCosmosDB
+  variables:
+    cosmosDbConnectionString: $[stageDependencies.DeployCosmosDB.CreateCosmosDB.outputs['fetchConnectionString.cosmosDbConnectionString']]
+  jobs:
+  - job: DeployAPIJob
+    steps:
+      - template: deploy-api.yml
+        parameters:
+          cosmosDbConnectionString: $(cosmosDbConnectionString)
