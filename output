@@ -1,0 +1,55 @@
+trigger:
+- main
+
+pool:
+  vmImage: 'windows-latest'
+
+variables:
+  buildConfiguration: 'Release'
+  dotnetVersion: '8.x'
+  azureSubscription: 'azureServiceConnection'
+  resourceGroupName: 'YourResourceGroupName'
+  cosmosDbAccountName: 'YourCosmosDbAccountName'
+  serviceBusNamespace: 'YourServiceBusNamespace'
+  serviceBusTopic: 'YourTopicName'
+  serviceBusSubscription: 'YourSubscriptionName'
+  # Additional variables...
+
+stages:
+- stage: Build
+  jobs:
+  - job: BuildJob
+    steps:
+    - template: build-template.yml
+      parameters:
+        dotnetVersion: $(dotnetVersion)
+        buildConfiguration: $(buildConfiguration)
+        # Additional parameters as needed...
+
+- stage: Deploy
+  dependsOn: Build
+  variables:
+    cosmosDbConnectionString: $[stageDependencies.Build.BuildJob.outputs['setCosmosDbConnectionString.cosmosDbConnectionString']]
+  jobs:
+  - job: DeployJob
+    steps:
+    - template: deploy-template.yml
+      parameters:
+        azureSubscription: $(azureSubscription)
+        resourceGroupName: $(resourceGroupName)
+        cosmosDbAccountName: $(cosmosDbAccountName)
+        serviceBusNamespace: $(serviceBusNamespace)
+        serviceBusTopic: $(serviceBusTopic)
+        serviceBusSubscription: $(serviceBusSubscription)
+        # Capture the output from this deployment as needed...
+
+- stage: Release
+  dependsOn: Deploy
+  jobs:
+  - job: ReleaseJob
+    steps:
+    - template: release-template.yml
+      parameters:
+        azureSubscription: $(azureSubscription)
+        cosmosDbConnectionString: $(cosmosDbConnectionString)
+        # Additional parameters as needed...
