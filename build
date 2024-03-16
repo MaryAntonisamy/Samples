@@ -1,0 +1,25 @@
+parameters:
+  azureSubscription: ''
+  resourceGroupName: ''
+  cosmosDbAccountName: ''
+  databaseName: ''
+  containerName: ''
+  partitionKeyPath: '/examplePartitionKey'
+  throughput: 400
+
+steps:
+- task: AzureCLI@2
+  inputs:
+    azureSubscription: ${{ parameters.azureSubscription }}
+    scriptType: 'bash'
+    scriptLocation: 'inlineScript'
+    inlineScript: |
+      # Create an Azure Cosmos DB account
+      az cosmosdb create --name ${{ parameters.cosmosDbAccountName }} --resource-group ${{ parameters.resourceGroupName }} --kind GlobalDocumentDB --locations regionName=eastus failoverPriority=0 isZoneRedundant=False
+      
+      # Get the connection string for the Azure Cosmos DB account
+      connectionString=$(az cosmosdb keys list --name ${{ parameters.cosmosDbAccountName }} --resource-group ${{ parameters.resourceGroupName }} --type connection-strings --query connectionStrings[0].connectionString -o tsv)
+      
+      # Output the connection string to a variable
+      echo "##vso[task.setvariable variable=cosmosDbConnectionString;isOutput=true]$connectionString"
+  name: createCosmosDbAndCaptureConnectionString
