@@ -1,0 +1,22 @@
+stages:
+- stage: Build
+  jobs:
+  - job: BuildJob
+    steps:
+    - template: build-template.yml
+      parameters:
+        azureSubscription: 'yourAzureServiceConnectionName'
+        resourceGroupName: 'yourResourceGroupName'
+        cosmosDbAccountName: 'yourCosmosDbAccountName'
+        databaseName: 'yourDatabaseName'
+        containerName: 'yourContainerName'
+
+- stage: Deploy
+  dependsOn: Build
+  variables:
+    cosmosDbConnectionString: $[stageDependencies.Build.BuildJob.outputs['createCosmosDbAndCaptureConnectionString.cosmosDbConnectionString']]
+  jobs:
+  - job: DeployJob
+    steps:
+    - script: echo "Cosmos DB Connection String: $(cosmosDbConnectionString)"
+      displayName: 'Use Cosmos DB Connection String'
