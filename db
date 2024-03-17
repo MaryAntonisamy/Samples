@@ -1,0 +1,51 @@
+public class DbInitialisationService : IHostedService
+{
+    private readonly ILogger<DbInitialisationService> _logger;
+    private readonly IOptions<CosmosOptions> _options;
+    private readonly CosmosClient _dbClient;
+    private readonly List<CosmosEntityConfiguration> _cosmosEntityConfigurations;
+
+    public DbInitialisationService(
+        ILogger<DbInitialisationService> logger,
+        IOptions<CosmosOptions> options,
+        CosmosClient dbClient,
+        List<CosmosEntityConfiguration> cosmosEntityConfigurations)
+    {
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _options = options ?? throw new ArgumentNullException(nameof(options));
+        _dbClient = dbClient ?? throw new ArgumentNullException(nameof(dbClient));
+        _cosmosEntityConfigurations = cosmosEntityConfigurations ?? throw new ArgumentNullException(nameof(cosmosEntityConfigurations));
+    }
+
+    public async Task StartAsync(CancellationToken cancellationToken)
+    {
+        _logger.LogInformation($"Running the DB Initialisation");
+
+        try
+        {
+            await CreateContainersAsync(cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError($"Database initialisation failed: {ex}", ex);
+        }
+    }
+
+    private async Task CreateContainersAsync(CancellationToken cancellationToken)
+    {
+        _logger.LogInformation($"Creating the database");
+        var database = await _dbClient.CreateDatabaseIfNotExistsAsync(_options.Value.DatabaseName, cancellationToken: cancellationToken);
+
+        foreach (var cosmosEntityConfiguration in _cosmosEntityConfigurations)
+        {
+            _logger.LogInformation($"Creating container: " + cosmosEntityConfiguration.ContainerName);
+            await database.Database.CreateContainerIfNotExistsAsync(cosmosEntityConfiguration.ContainerName, cosmosEntityConfiguration.PartitionKeyPath, cancellationToken: cancellationToken);
+        }
+
+        _logger.LogInformation($"Containers created successfully");
+    }
+
+    public Task StopAsync(CancellationToken cancellationToken) =>
+        Task.CompletedTask;
+}
+
