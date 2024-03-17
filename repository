@@ -1,0 +1,255 @@
+public interface ICosmosRepository<T> where T : IPrimaryKeyEntity
+{
+    Task<ICollection<T>> GetItemsAsync(Expression<Func<T, bool>>? whereClause = null);
+    Task<T?> GetItemAsync(string id);
+    Task<T> InsertItemAsync(T item);
+    Task CreateItemsAsync(List<T> items);
+    Task DeleteAllItemsAsync();
+    Task UpsertItemAsync(T id);
+}
+
+
+
+
+public class CosmosRepository<T> : ICosmosRepository<T> where T : IPrimaryKeyEntity
+{
+    private readonly CosmosLinqSerializerOptions _cosmosLinqSerializerOptions;
+    protected readonly ILogger _logger;
+    private readonly CosmosOptions _cosmosOptions;
+    protected Container _container;
+
+    public CosmosRepository(
+        ILogger logger,
+        CosmosOptions cosmosOptions,
+        CosmosClient dbClient,
+        string containerName)
+    {
+        ArgumentNullException.ThrowIfNull(cosmosOptions);
+        ArgumentNullException.ThrowIfNull(dbClient);
+        ArgumentNullException.ThrowIfNull(containerName);
+
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _cosmosOptions = cosmosOptions;
+        _container = dbClient.GetContainer(cosmosOptions.DatabaseName, containerName);
+        _cosmosLinqSerializerOptions = new CosmosLinqSerializerOptions()
+        {
+            PropertyNamingPolicy = CosmosPropertyNamingPolicy.CamelCase
+        };
+    }
+
+    public async Task<ICollection<T>> GetItemsAsync(Expression<Func<T, bool>>? whereClause = null)
+    {
+        _logger.LogInformation("{operationName} - called for container {containerId}", nameof(GetItemsAsync), _container.Id);
+
+        var orderedQuery = _container.GetItemLinqQueryable<T>(default, default, default, _cosmosLinqSerializerOptions);
+
+        var entityIterator = GetFeedIterator(orderedQuery, whereClause);
+
+        var results = new List<T>();
+        while (entityIterator.HasMoreResults)
+        {
+            results.AddRange((await entityIterator.ReadNextAsync()).Resource);
+        }
+
+        return results;
+    }
+
+    public async Task DeleteAllItemsAsync()
+    {
+        _logger.LogInformation("{operationName} - called for container {containerId}", nameof(DeleteAllItemsAsync), _container.Id);
+
+        var allItems = await GetItemsAsync();
+
+        foreach (var item in allItems)
+            await _container.DeleteItemAsync<T>(item.Id, new PartitionKey(item.Id));
+    }
+
+    public async Task<T> InsertItemAsync(T item)
+    {
+        _logger.LogInformation("{operationName} - called for container {containerId}", nameof(InsertItemAsync), _container.Id);
+
+        try
+        {
+            var response = await _container.CreateItemAsync(item, new PartitionKey(item.Id));
+
+            return response.Resource;
+        }
+        catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.Conflict)
+        {
+            throw new DbEntityConflictException(item.Id);
+        }
+    }
+
+    public async Task UpsertItemAsync(T item)
+    {
+        _logger.LogInformation("{operationName} - called for container {containerId}", nameof(UpsertItemAsync), _container.Id);
+
+        await _container.UpsertItemAsync(item, new PartitionKey(item.Id));
+    }
+
+    public async Task<T?> GetItemAsync(string id)
+    {
+        try
+        {
+            var response = await _container.ReadItemAsync<T>(id, new PartitionKey(id));
+            return response.Resource;
+        }
+        catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        {
+            _logger.LogError(ex, "{operationName} - {id} not found in cosmos container {containerId}",
+                nameof(GetItemAsync), id, _container.Id);
+            return default;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "{operationName} - There was an error getting {id} from container {containerId}",
+                nameof(GetItemAsync), id, _container.Id);
+            throw;
+        }
+    }
+
+    public async Task CreateItemsAsync(List<T> items)
+    {
+        try
+        {
+            var tasks = new List<Task>();
+
+            foreach (var lookupItem in items)
+                tasks.Add(_container.CreateItemAsync(lookupItem, new PartitionKey(lookupItem.Id)));
+
+            await Task.WhenAll(tasks);
+        }
+        catch (CosmosException ex)
+        {
+            _logger.LogError(ex, "{operationName} - Error inserting items into cosmos collection {container}",
+                nameof(CreateItemsAsync), _container.Id);
+            throw;
+        }
+    }
+
+    private FeedIterator<T> GetFeedIterator(IOrderedQueryable<T> orderedQuery, Expression<Func<T, bool>>? whereClause)
+    {
+        if (whereClause is not null)
+        {
+            var query = orderedQuery.Where(whereClause);
+
+            LogQueryText(query.ToQueryDefinition());
+
+            return query.ToFeedIterator();
+        }
+
+        LogQueryText(orderedQuery.ToQueryDefinition());
+        return orderedQuery.ToFeedIterator();
+    }
+
+    private void LogQueryText(QueryDefinition queryDefinition)
+    {
+        if (!_cosmosOptions.LogSQLQueries)
+            return;
+
+        _logger.LogInformation($"Running Cosmos query on {_container.Id}: {queryDefinition?.QueryText ?? string.Empty}");
+    }
+}
+
+public class CosmosRepositoryFactory : ICosmosRepositoryFactory
+{
+    private readonly CosmosClient _dbClient;
+    private readonly IOptions<CosmosOptions> _cosmosOptions;
+    private readonly ILoggerFactory _loggerFactory;
+    private readonly List<CosmosEntityConfiguration> _cosmosEntityConfigurations;
+
+    public CosmosRepositoryFactory(
+        CosmosClient dbClient,
+        IOptions<CosmosOptions> cosmosOptions,
+        ILoggerFactory loggerFactory,
+        List<CosmosEntityConfiguration> cosmosEntityConfigurations)
+    {
+        _dbClient = dbClient ?? throw new ArgumentNullException(nameof(dbClient));
+        _cosmosOptions = cosmosOptions ?? throw new ArgumentNullException(nameof(cosmosOptions));
+        _loggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
+        _cosmosEntityConfigurations = cosmosEntityConfigurations ?? throw new ArgumentNullException(nameof(cosmosEntityConfigurations));
+    }
+
+    public ICosmosRepository<T> CreateCosmosRepository<T>() where T : IPrimaryKeyEntity
+    {
+        var logger = _loggerFactory.CreateLogger<CosmosRepository<T>>();
+        var containerName = GetContainerName(typeof(T));
+
+        return new CosmosRepository<T>(logger, _cosmosOptions.Value, _dbClient, containerName);
+    }
+
+    private string GetContainerName(Type entityType)
+    {
+        var cosmosEntityConfiguration = _cosmosEntityConfigurations.FirstOrDefault(x => x.EntityType == entityType) ??
+            throw new Exception($"cosmosEntityConfiguration not found for type {entityType}");
+
+        if (string.IsNullOrWhiteSpace(cosmosEntityConfiguration.ContainerName))
+            throw new Exception($"ContainerName not configured for type {entityType}");
+
+        return cosmosEntityConfiguration.ContainerName;
+    }
+}
+
+
+public static class CosmosServiceExtensions
+{
+    private const string _entityPartitionKeyPath = "/id";
+
+    public static IServiceCollection AddDataApplicationServices(this IServiceCollection services,
+        IConfiguration configuration, bool initialise)
+    {
+        // configure options
+        services.Configure<CosmosOptions>(CosmosOptions.SectionName, configuration);
+        services.AddOptions<CosmosOptions>().Bind(configuration.GetSection(CosmosOptions.SectionName)).ValidateDataAnnotations();
+
+        // configure cosmos client
+        services.AddSingleton(provider =>
+        {
+            var cosmosOptions = provider.GetService<IOptions<CosmosOptions>>()?.Value ??
+                throw new ConfigurationErrorsException($"Cannot locate {nameof(CosmosOptions)}");
+
+            var cosmosClientOptions = new CosmosClientOptions()
+            {
+                SerializerOptions = new CosmosSerializationOptions
+                {
+                    IgnoreNullValues = true,
+                    PropertyNamingPolicy = CosmosPropertyNamingPolicy.CamelCase
+                }
+            };
+
+            return new CosmosClient(cosmosOptions.Endpoint, cosmosOptions.AccountKey, cosmosClientOptions);
+        });
+
+        services.AddSingleton<ICosmosRepositoryFactory, CosmosRepositoryFactory>();
+        services.AddSingleton(provider =>
+        {
+            return new List<CosmosEntityConfiguration>()
+            {
+                new CosmosEntityConfiguration(typeof(DomainLibertyClaim), "domain-liberty-claims", _entityPartitionKeyPath),
+                new CosmosEntityConfiguration(typeof(LibertyHOC), "liberty-hoc", _entityPartitionKeyPath),
+                new CosmosEntityConfiguration(typeof(LibertyOutcome), "liberty-outcome", _entityPartitionKeyPath),
+                new CosmosEntityConfiguration(typeof(LibertyState), "liberty-claims", _entityPartitionKeyPath),
+                new CosmosEntityConfiguration(typeof(LibertySchemesRule), "liberty-schemes-rule", _entityPartitionKeyPath),
+                new CosmosEntityConfiguration(typeof(LibertyHistory), "liberty-history", _entityPartitionKeyPath),
+                new CosmosEntityConfiguration(typeof(ReleaseScript), "release-scripts", _entityPartitionKeyPath)
+            };
+        });
+
+        services.AddSingleton<IReleaseScriptRunnerService, ReleaseScriptRunnerService>();
+        services.AddSingleton<IReleaseScriptRetrievalService, ReleaseScriptRetrievalService>();
+
+        if (initialise)
+            services.AddHostedService<DbInitialisationService>();
+
+        services.AddHostedService<ReleaseScriptRunnerHostedService>();
+
+        return services;
+    }
+
+  services.AddDataApplicationServices(hostContext.Configuration, false);
+
+  
+public interface ICosmosRepositoryFactory
+{
+    ICosmosRepository<T> CreateCosmosRepository<T>() where T : IPrimaryKeyEntity;
+}
