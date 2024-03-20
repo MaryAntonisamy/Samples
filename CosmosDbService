@@ -1,0 +1,100 @@
+using Microsoft.Azure.Cosmos;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
+
+public class CosmosDbService : ICosmosDbService
+{
+    private readonly CosmosClient _cosmosClient;
+    private readonly Container _container;
+
+    public CosmosDbService(string connectionString, string databaseId, string containerId)
+    {
+        _cosmosClient = new CosmosClient(connectionString);
+        _container = _cosmosClient.GetContainer(databaseId, containerId);
+    }
+
+    public async Task<IEnumerable<EventDocument>> GetEventsDueTodayAsync()
+    {
+        var today = DateTime.UtcNow.Date;
+        var query = $"SELECT * FROM c WHERE c.NextEventDate = '{today:yyyy-MM-dd}'";
+        var iterator = _container.GetItemQueryIterator<EventDocument>(query);
+        var results = new List<EventDocument>();
+
+        while (iterator.HasMoreResults)
+        {
+            var response = await iterator.ReadNextAsync();
+            results.AddRange(response.ToList());
+        }
+
+        return results;
+    }
+
+    public async Task UpdateEventDocumentAsync(EventDocument eventDocument)
+    {
+        // Assume eventDocument.Id is the unique key
+        await _container.UpsertItemAsync(eventDocument, new PartitionKey(eventDocument.Id));
+    }
+}
+
+
+using Azure.Messaging.ServiceBus;
+using System.Text.Json;
+using System.Threading.Tasks;
+
+public class ServiceBusPublisher : IServiceBusPublisher
+{
+    private readonly ServiceBusClient _client;
+    private readonly ServiceBusSender _sender;
+
+    public ServiceBusPublisher(string connectionString, string topicName)
+    {
+        _client = new ServiceBusClient(connectionString);
+        _sender = _client.CreateSender(topicName);
+    }
+
+    public async Task PublishAsync(EventDocument eventDocument)
+    {
+        var messageBody = JsonSerializer.Serialize(eventDocument);
+        var message = new ServiceBusMessage(messageBody)
+        {
+            CorrelationId = eventDocument.CorrelationId ?? System.Guid.NewGuid().ToString()
+        };
+        await _sender.SendMessageAsync(message);
+    }
+
+    // Make sure to properly dispose of resources
+    public async ValueTask DisposeAsync()
+    {
+        await _sender.CloseAsync();
+        await _client.DisposeAsync();
+    }
+}
+
+
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+
+var host = new HostBuilder()
+    .ConfigureServices((hostContext, services) =>
+    {
+        // Cosmos DB and Service Bus configuration should come from settings
+        services.AddSingleton<ICosmosDbService, CosmosDbService>(sp =>
+            new CosmosDbService(
+                hostContext.Configuration["CosmosDb:ConnectionString"],
+                hostContext.Configuration["CosmosDb:DatabaseId"],
+                hostContext.Configuration["CosmosDb:ContainerId"]));
+
+        services.AddSingleton<IServiceBusPublisher, ServiceBusPublisher>(sp =>
+            new ServiceBusPublisher(
+                hostContext.Configuration["ServiceBus:ConnectionString"],
+                hostContext.Configuration["ServiceBus:TopicName"]));
+
+        services.AddHostedService<EventPollingService>();
+    })
+    .Build();
+
+await host.RunAsync();
+
+
