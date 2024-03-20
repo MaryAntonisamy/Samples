@@ -1,0 +1,159 @@
+// Models/EventDocument.cs
+public class EventDocument
+{
+    public string Id { get; set; }
+    public DateTime NextEventDate { get; set; }
+    public DateTime? NextEventTime { get; set; }
+    public string CorrelationId { get; set; }
+    public int RecurringIntervalDays { get; set; }
+    // Other properties as needed
+}
+
+// Interfaces/IEventDocumentService.cs
+public interface IEventDocumentService
+{
+    Task<IEnumerable<EventDocument>> GetEventsDueTodayAsync();
+    Task PublishEventsAsync(IEnumerable<EventDocument> events);
+    Task UpdateEventDocumentAsync(EventDocument eventDocument);
+}
+
+
+public class EventDocumentService : IEventDocumentService
+{
+    private readonly ICosmosDbService _cosmosDbService;
+    private readonly IServiceBusPublisher _serviceBusPublisher;
+
+    public EventDocumentService(ICosmosDbService cosmosDbService, IServiceBusPublisher serviceBusPublisher)
+    {
+        _cosmosDbService = cosmosDbService;
+        _serviceBusPublisher = serviceBusPublisher;
+    }
+
+    public async Task<IEnumerable<EventDocument>> GetEventsDueTodayAsync()
+    {
+        // Implement logic to fetch documents from CosmosDB where NextEventDate is today
+        // and NextEventTime is null or yet to occur
+    }
+
+    public async Task PublishEventsAsync(IEnumerable<EventDocument> events)
+    {
+        // Implement logic to publish events to Service Bus topic
+        // Consider setting a CorrelationId for each event
+    }
+
+    public async Task UpdateEventDocumentAsync(EventDocument eventDocument)
+    {
+        // Implement logic to update the document's NextEventDate based on the recurring interval
+    }
+}
+
+public class EventPollingService : BackgroundService
+{
+    private readonly IEventDocumentService _eventDocumentService;
+
+    public EventPollingService(IEventDocumentService eventDocumentService)
+    {
+        _eventDocumentService = eventDocumentService;
+    }
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            var eventsDueToday = await _eventDocumentService.GetEventsDueTodayAsync();
+            var eventsToPublish = eventsDueToday.Where(e => e.NextEventTime == null || e.NextEventTime > DateTime.UtcNow);
+
+            await _eventDocumentService.PublishEventsAsync(eventsToPublish);
+
+            foreach (var eventDocument in eventsToPublish)
+            {
+                await _eventDocumentService.UpdateEventDocumentAsync(eventDocument);
+            }
+
+            // Wait for the next poll interval
+            await Task.Delay(TimeSpan.FromMinutes(5), stoppingToken);
+        }
+    }
+}
+
+
+dotnet add package Microsoft.Extensions.DependencyInjection
+dotnet add package Moq
+dotnet add package xunit
+dotnet add package xunit.runner.visualstudio
+dotnet add package coverlet.collector
+
+
+public class EventDocumentServiceTests
+{
+    private readonly Mock<ICosmosDbService> _mockCosmosDbService;
+    private readonly Mock<IServiceBusPublisher> _mockServiceBusPublisher;
+    private readonly EventDocumentService _eventDocumentService;
+
+    public EventDocumentServiceTests()
+    {
+        _mockCosmosDbService = new Mock<ICosmosDbService>();
+        _mockServiceBusPublisher = new Mock<IServiceBusPublisher>();
+        _eventDocumentService = new EventDocumentService(_mockCosmosDbService.Object, _mockServiceBusPublisher.Object);
+    }
+}
+
+[Fact]
+public async Task GetEventsDueTodayAsync_ReturnsEmpty_WhenNoEventsExist()
+{
+    _mockCosmosDbService.Setup(s => s.GetEventsDueTodayAsync())
+                        .ReturnsAsync(new List<EventDocument>());
+
+    var result = await _eventDocumentService.GetEventsDueTodayAsync();
+
+    Assert.Empty(result);
+}
+
+[Fact]
+public async Task GetEventsDueTodayAsync_ReturnsEvents_WhenEventsExist()
+{
+    var expectedEvents = new List<EventDocument>
+    {
+        new EventDocument { Id = "1", NextEventDate = DateTime.UtcNow },
+        new EventDocument { Id = "2", NextEventDate = DateTime.UtcNow }
+    };
+
+    _mockCosmosDbService.Setup(s => s.GetEventsDueTodayAsync())
+                        .ReturnsAsync(expectedEvents);
+
+    var result = await _eventDocumentService.GetEventsDueTodayAsync();
+
+    Assert.Equal(2, result.Count());
+    _mockCosmosDbService.Verify(s => s.GetEventsDueTodayAsync(), Times.Once);
+}
+
+[Fact]
+public async Task PublishEventsAsync_SendsMessages_ForEachEvent()
+{
+    var eventsToPublish = new List<EventDocument>
+    {
+        new EventDocument { Id = "1" },
+        new EventDocument { Id = "2" }
+    };
+
+    await _eventDocumentService.PublishEventsAsync(eventsToPublish);
+
+    _mockServiceBusPublisher.Verify(s => s.PublishAsync(It.IsAny<EventDocument>()), Times.Exactly(2));
+}
+
+[Fact]
+public async Task UpdateEventDocumentAsync_UpdatesDocumentCorrectly()
+{
+    var eventDocument = new EventDocument
+    {
+        Id = "1",
+        NextEventDate = DateTime.UtcNow,
+        RecurringIntervalDays = 7
+    };
+
+    await _eventDocumentService.UpdateEventDocumentAsync(eventDocument);
+
+    _mockCosmosDbService.Verify(s => s.UpdateEventDocumentAsync(It.Is<EventDocument>(doc => doc.NextEventDate == DateTime.UtcNow.AddDays(7))), Times.Once);
+}
+
+
