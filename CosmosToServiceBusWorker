@@ -1,0 +1,102 @@
+dotnet new worker -n CosmosToServiceBusWorker
+cd CosmosToServiceBusWorker
+
+dotnet add package Microsoft.Azure.Cosmos
+dotnet add package Azure.Messaging.ServiceBus
+dotnet add package Microsoft.Extensions.Configuration
+dotnet add package Microsoft.Extensions.Configuration.Json
+dotnet add package Microsoft.Extensions.Configuration.EnvironmentVariables
+
+
+{
+  "CosmosDb": {
+    "EndpointUri": "<your-cosmos-db-uri>",
+    "PrimaryKey": "<your-cosmos-db-primary-key>",
+    "DatabaseId": "<your-database-id>",
+    "ContainerId": "<your-container-id>"
+  },
+  "ServiceBus": {
+    "ConnectionString": "<your-service-bus-connection-string>",
+    "TopicName": "<your-topic-name>"
+  }
+}
+
+using System;
+using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.Azure.Cosmos;
+using Azure.Messaging.ServiceBus;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+
+public class Worker : BackgroundService
+{
+    private readonly ILogger<Worker> _logger;
+    private readonly IConfiguration _configuration;
+    private CosmosClient _cosmosClient;
+    private Container _container;
+    private ServiceBusClient _serviceBusClient;
+    private ServiceBusSender _sender;
+
+    public Worker(ILogger<Worker> logger, IConfiguration configuration)
+    {
+        _logger = logger;
+        _configuration = configuration;
+    }
+
+    public override async Task StartAsync(CancellationToken cancellationToken)
+    {
+        _logger.LogInformation("Worker starting at: {time}", DateTimeOffset.Now);
+
+        // Initialize Cosmos DB client
+        _cosmosClient = new CosmosClient(_configuration["CosmosDb:EndpointUri"], _configuration["CosmosDb:PrimaryKey"]);
+        _container = _cosmosClient.GetContainer(_configuration["CosmosDb:DatabaseId"], _configuration["CosmosDb:ContainerId"]);
+
+        // Initialize Service Bus client
+        _serviceBusClient = new ServiceBusClient(_configuration["ServiceBus:ConnectionString"]);
+        _sender = _serviceBusClient.CreateSender(_configuration["ServiceBus:TopicName"]);
+
+        await base.StartAsync(cancellationToken);
+    }
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            _logger.LogInformation("Worker running at: {time}", DateTimeOffset.Now);
+
+            // Query Cosmos DB
+            var query = "SELECT * FROM c";
+            var iterator = _container.GetItemQueryIterator<dynamic>(query);
+            while (iterator.HasMoreResults)
+            {
+                var response = await iterator.ReadNextAsync();
+                foreach (var item in response)
+                {
+                    try
+                    {
+                        // Serialize your item to JSON string if necessary and send to Service Bus
+                        string messageBody = Newtonsoft.Json.JsonConvert.SerializeObject(item);
+                        var message = new ServiceBusMessage(messageBody);
+                        await _sender.SendMessageAsync(message);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Error sending message to Service Bus");
+                    }
+                }
+            }
+
+            await Task.Delay(10000, stoppingToken); // Run every 10 seconds
+        }
+    }
+
+    public override async Task StopAsync(CancellationToken cancellationToken)
+    {
+        _logger.LogInformation("Worker stopping at: {time}", DateTimeOffset.Now);
+        await _serviceBusClient.DisposeAsync();
+        await _cosmosClient.DisposeAsync();
+        await base.StopAsync(cancellationToken);
+    }
+}
